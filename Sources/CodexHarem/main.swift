@@ -14,7 +14,8 @@ if args.contains("--help") {
     codex-harem [--demo] [--home PATH] [--pets PATH] [--config PATH] [--codex PATH]
     codex-harem --diagnose [--home PATH] [--pets PATH]
 
-    Multiple native desktop Codex pets. Drag to move; right-click to bind a thread,
+    Multiple native desktop pets listening to Codex, Claude Code, and opencode.
+    Drag to move; right-click to choose the harness each pet listens to, bind a thread,
     resize, or remove. Use the horned anime menu-bar icon to add more pets. No API key required.
     --render-contact PATH  Write a PNG of installed pets and animation rows.
     --probe N    Print status snapshots for N seconds (1–60), then exit.
@@ -27,6 +28,10 @@ if args.contains("--help") {
     --import-pet PATH  Copy a pet folder into this library, then exit (existing IDs are kept).
     --config     Layout file (default: ~/Library/Application Support/CodexHarem/pets.json).
     --codex      Absolute path to Codex CLI (default: search PATH and Homebrew paths).
+    --claude-home  Claude Code data directory (default: ~/.claude). Claude Code status
+                 comes from tailing session transcripts; no hooks or setup are needed.
+    --opencode   Absolute path to the opencode CLI (default: search PATH and Homebrew paths).
+                 The watcher spawns "opencode serve" on a local port.
     """)
     exit(0)
 }
@@ -34,6 +39,9 @@ let fm = FileManager.default
 let home = URL(fileURLWithPath: option("--home") ?? ProcessInfo.processInfo.environment["CODEX_HOME"] ?? fm.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path)
 let support = fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/CodexHarem")
 let petDirectory = URL(fileURLWithPath: option("--pets") ?? support.appendingPathComponent("Pets").path)
+let claudePaths = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init) + ["/opt/homebrew/bin", "/usr/local/bin"]
+let opencodeExecutable = option("--opencode") ?? claudePaths.map { $0 + "/opencode" }.first(where: { fm.isExecutableFile(atPath: $0) }) ?? ""
+let claudeHome = URL(fileURLWithPath: option("--claude-home") ?? fm.homeDirectoryForCurrentUser.appendingPathComponent(".claude").path)
 if args.contains("--import-codex") {
     let report = importCodexPets(from: home, to: petDirectory)
     print("Copied \(report.copied) pets; kept \(report.skipped) existing pets in \(petDirectory.path)")
@@ -86,6 +94,11 @@ if args.contains("--diagnose") {
     let states = monitor.poll().sorted { $0.updatedAt > $1.updatedAt }
     for state in states.prefix(10) { print("thread \(state.id): \(state.status.rawValue)") }
     print("\(catalog.pets.count) pets, \(states.count) recent threads. Shared-server socket: \(fm.fileExists(atPath: home.appendingPathComponent("app-server-control/app-server-control.sock").path) ? "present" : "absent")")
+    let claudeMonitor = ClaudeMonitor(home: claudeHome)
+    let claudeStates = claudeMonitor.poll().sorted { $0.updatedAt > $1.updatedAt }
+    for state in claudeStates.prefix(10) { print("claude \(state.id): \(state.status.rawValue) · \(state.name)") }
+    print("Claude Code: \(claudeStates.count) recent sessions from \(claudeHome.path)")
+    print("opencode: \(opencodeExecutable.isEmpty ? "CLI not found" : opencodeExecutable)")
     exit(catalog.pets.isEmpty || !catalog.errors.isEmpty ? 1 : 0)
 }
 let paths = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init) + ["/opt/homebrew/bin", "/usr/local/bin"]
@@ -93,16 +106,29 @@ let executable = option("--codex") ?? paths.map { $0 + "/codex" }.first(where: {
 let config = URL(fileURLWithPath: option("--config") ?? support.appendingPathComponent("pets.json").path)
 if let seconds = option("--probe").flatMap(Double.init), seconds > 0, seconds <= 60 {
     let probe = Monitor(home: home, executable: executable)
-    probe.onUpdate = { states, connection in
-        print(connection + " | " + states.prefix(10).map { "\($0.id):\($0.status.rawValue)" }.joined(separator: ", "))
+    let claudeProbe = ClaudeWatcher(home: claudeHome)
+    let openProbe = OpenCodeWatcher(executable: opencodeExecutable)
+    var merged: [ThreadState] = []
+    var diagnostics: [String: String] = [:]
+    func snapshot() {
+        let connection = ["Codex", "Claude Code", "opencode"].compactMap { diagnostics[$0] }.joined(separator: " · ")
+        print(connection + " | " + merged.prefix(12).map { "\($0.harness.rawValue):\($0.status.rawValue):\($0.name.prefix(30))" }.joined(separator: ", "))
         fflush(stdout)
     }
-    probe.start()
+    probe.onUpdate = { states, connection in merged = states; diagnostics["Codex"] = connection; snapshot() }
+    claudeProbe.onUpdate = { states, connection in
+        DispatchQueue.main.async { merged = (merged.filter { $0.harness != .claude } + states).sorted { $0.updatedAt > $1.updatedAt }; diagnostics["Claude Code"] = connection; snapshot() }
+    }
+    openProbe.onUpdate = { states, connection in
+        DispatchQueue.main.async { merged = (merged.filter { $0.harness != .opencode } + states).sorted { $0.updatedAt > $1.updatedAt }; diagnostics["opencode"] = connection; snapshot() }
+    }
+    probe.start(); claudeProbe.start(); openProbe.start()
     RunLoop.main.run(until: Date().addingTimeInterval(seconds))
-    probe.stop()
+    probe.stop(); claudeProbe.stop(); openProbe.stop()
     exit(0)
 }
 let app = NSApplication.shared
-let delegate = App(catalog: catalog, config: config, monitor: Monitor(home: home, executable: executable), demo: args.contains("--demo"))
+let delegate = App(catalog: catalog, config: config, monitor: Monitor(home: home, executable: executable),
+                   claude: ClaudeWatcher(home: claudeHome), opencode: OpenCodeWatcher(executable: opencodeExecutable), demo: args.contains("--demo"))
 app.delegate = delegate
 app.run()

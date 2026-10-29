@@ -73,6 +73,8 @@ public struct PetInstance: Codable, Identifiable {
     public var petID: String
     /// nil follows the most recently active thread; "*" follows all threads.
     public var threadID: String?
+    /// nil means every harness; a value restricts the pet to one agent harness.
+    public var harness: Harness?
     public var x: Double
     public var y: Double
     public var size: Double = 140
@@ -83,13 +85,14 @@ public struct PetInstance: Codable, Identifiable {
         self.petID = petID; self.threadID = threadID; self.x = x; self.y = y
     }
     private enum CodingKeys: String, CodingKey {
-        case id, petID, threadID, x, y, size, walksAround, animationSpeed
+        case id, petID, threadID, harness, x, y, size, walksAround, animationSpeed
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(UUID.self, forKey: .id)
         petID = try values.decode(String.self, forKey: .petID)
         threadID = try values.decodeIfPresent(String.self, forKey: .threadID)
+        harness = try values.decodeIfPresent(Harness.self, forKey: .harness)
         x = try values.decode(Double.self, forKey: .x)
         y = try values.decode(Double.self, forKey: .y)
         size = try values.decodeIfPresent(Double.self, forKey: .size) ?? 140
@@ -99,12 +102,16 @@ public struct PetInstance: Codable, Identifiable {
 }
 public enum Selection {
     public static func status(for binding: String?, threads: [ThreadState]) -> PetStatus {
-        if let binding, binding != "*" { return threads.first { $0.id == binding }?.status ?? .offline }
+        status(for: binding, harness: .all, threads: threads)
+    }
+    public static func status(for binding: String?, harness: Harness, threads: [ThreadState]) -> PetStatus {
+        let pool = harness == .all ? threads : threads.filter { $0.harness == harness }
+        if let binding, binding != "*" { return pool.first { $0.id == binding }?.status ?? .offline }
         if binding == "*" {
             let priority: [PetStatus] = [.waiting, .working, .thinking]
-            return priority.first { state in threads.contains { $0.status == state } }
-                ?? threads.max(by: { $0.updatedAt < $1.updatedAt })?.status ?? .idle
+            return priority.first { state in pool.contains { $0.status == state } }
+                ?? pool.max(by: { $0.updatedAt < $1.updatedAt })?.status ?? .idle
         }
-        return threads.max(by: { $0.updatedAt < $1.updatedAt })?.status ?? .idle
+        return pool.max(by: { $0.updatedAt < $1.updatedAt })?.status ?? .idle
     }
 }

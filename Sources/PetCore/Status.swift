@@ -9,8 +9,9 @@ public struct ThreadState: Identifiable, Equatable, Sendable {
     public var name: String
     public var status: PetStatus
     public var updatedAt: Date
-    public init(id: String, name: String = "Codex", status: PetStatus = .idle, updatedAt: Date = Date()) {
-        self.id = id; self.name = name; self.status = status; self.updatedAt = updatedAt
+    public var harness: Harness
+    public init(id: String, name: String = "Codex", status: PetStatus = .idle, updatedAt: Date = Date(), harness: Harness = .codex) {
+        self.id = id; self.name = name; self.status = status; self.updatedAt = updatedAt; self.harness = harness
     }
 }
 

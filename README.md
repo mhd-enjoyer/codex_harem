@@ -1,6 +1,6 @@
 # Codex Harem
 
-Multiple animated Codex pets on your macOS desktop, following the same Codex CLI/app threads. A small native Swift package with no third-party dependencies or API key requirement.
+Multiple animated pets on your macOS desktop, following your coding-agent harnesses: Codex, Claude Code, and opencode. A small native Swift package with no third-party dependencies or API key requirement.
 
 Each pet has its own transparent, floating window. Add as many instances as you want, including duplicates. Drag to move, click to wave, and right-click to select a thread, resize, or remove. The horned anime menu-bar icon adds pets, arranges them, and hides or shows the group. Layout and thread bindings survive restarts. Pets appear across Spaces and alongside fullscreen apps; they don't take keyboard focus.
 
@@ -56,7 +56,9 @@ Local artwork is excluded from source control. The app zip built in this workspa
 
 ## Status syncing
 
-The companion connects with `codex app-server proxy` to the existing shared app-server socket. It initializes its own client, polls `thread/list`, and separately reads **all loaded threads**, including active threads older than the recent-history page. Reads use `includeTurns: false`; it never starts/resumes a conversation, changes Codex settings, sends a prompt, approves a tool, or requires a separate sign-in. Runtime status polling is once per second. Server-reported unloaded/idle states cannot be revived by stale active log records; only current log events enrich active work or preserve a recent terminal outcome. It also reduces lifecycle notifications when received. This protocol is documented in [Codex App Server](https://learn.chatgpt.com/docs/app-server).
+Each pet picks which harness it listens to: all harnesses, Codex, Claude Code, or opencode (right-click → **Listen to**). The "Follow thread" list only offers threads from the chosen harness, and switching harnesses drops a binding that belongs to another one. Thread IDs are namespaced per provider, so bindings never collide and saved layouts keep working across updates.
+
+The Codex companion connects with `codex app-server proxy` to the existing shared app-server socket. It initializes its own client, polls `thread/list`, and separately reads **all loaded threads**, including active threads older than the recent-history page. Reads use `includeTurns: false`; it never starts/resumes a conversation, changes Codex settings, sends a prompt, approves a tool, or requires a separate sign-in. Runtime status polling is once per second. Server-reported unloaded/idle states cannot be revived by stale active log records; only current log events enrich active work or preserve a recent terminal outcome. It also reduces lifecycle notifications when received. This protocol is documented in [Codex App Server](https://learn.chatgpt.com/docs/app-server).
 
 | Codex state | Pet behavior |
 | --- | --- |
@@ -73,10 +75,19 @@ A pet can follow a particular thread, the latest updated thread, or all threads.
 
 If the shared daemon is unavailable (including older Codex versions), the companion automatically reads recent session JSONL files under `$CODEX_HOME/sessions` and retries the proxy every ten seconds. It reads the latest 64 session files incrementally, retains partial writes, and handles truncation and atomic file replacement. The horned anime menu-bar icon identifies this degraded mode. **Session logs cannot reliably expose pending approvals or an abruptly killed Codex process**, and a final logged active state can remain active until another event arrives. Exact waiting/idle runtime status requires the shared-server connection. No inference requests are made by the companion.
 
+### Claude Code
+
+Claude Code needs no setup and no hooks: the companion tails session transcripts under `~/.claude/projects` (latest 64, incremental, partial-write safe) once per second, exactly like the Codex log fallback. Tool calls map to working, model text and reasoning to thinking, a finished turn marker to completed, and thread names come from generated session titles or the project folder. **Transcripts cannot expose permission prompts, so the waiting animation never appears for Claude Code**, and a session interrupted without further writes may keep its last status. Use `--claude-home` to point at a different Claude data directory.
+
+### opencode
+
+If an `opencode` CLI is found on `PATH` (or passed with `--opencode`), the companion spawns `opencode serve` on a free localhost port and observes it like the Codex shared server: one poll per second of `/session` (titles, timestamps) and `/session/status` (busy/retry/idle), plus the `/event` SSE stream for permission requests (waiting), permission replies, turn completion, and errors (aborted turns show interrupted, other errors failed). Sessions you run in the opencode TUI appear in the list because the server reads the same shared storage. Set `OPENCODE_SERVER_PASSWORD` if you want the spawned server protected with basic auth; the companion sends the credentials automatically.
+
 The default Codex home is `$CODEX_HOME`, falling back to `~/.codex`. Layout is stored separately at `~/Library/Application Support/CodexHarem/pets.json`.
 
 ```sh
 codex-harem --home /path/to/codex-home --codex /absolute/path/to/codex
+codex-harem --claude-home /path/to/claude-home --opencode /absolute/path/to/opencode
 codex-harem --pets /path/to/independent-pets --config /path/to/layout.json
 codex-harem --diagnose
 codex-harem --probe 10
@@ -98,7 +109,7 @@ python3 scripts/test-proxy.py  # after swift build
 .build/debug/codex-harem --demo --config /tmp/pet-layout.json --smoke /tmp/pet-windows
 ```
 
-`--smoke` runs the desktop app, renders its visible pet windows to PNG, and exits. It requires a normal macOS graphical login with WindowServer access. `--render-contact` renders installed sprite frames without launching the desktop UI. The proxy fixture validates the real transport's handshake, status transitions, and loaded-thread reads without issuing Codex model requests.
+`--smoke` runs the desktop app, renders its visible pet windows to PNG, and exits. It requires a normal macOS graphical login with WindowServer access. `--render-contact` renders installed sprite frames without launching the desktop UI. The proxy fixture validates the real transport's handshake, status transitions, and loaded-thread reads without issuing Codex model requests. `--probe N` prints one merged snapshot per second from all three harnesses, including the spawned opencode server.
 
 In a restricted build sandbox, point Swift's caches at a writable temporary directory:
 

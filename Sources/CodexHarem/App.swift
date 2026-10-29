@@ -16,16 +16,23 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let catalog: Catalog
     let config: URL
     let monitor: Monitor
+    let claudeWatcher: ClaudeWatcher
+    let opencodeWatcher: OpenCodeWatcher
     var instances: [PetInstance] = []
     var windows: [UUID: PetPanel] = [:]
     var threads: [ThreadState] = []
+    var codexThreads: [ThreadState] = []
+    var claudeThreads: [ThreadState] = []
+    var opencodeThreads: [ThreadState] = []
+    var diagnostics: [String: String] = [:]
     var connection = "Starting…"
     var statusItem: NSStatusItem!
     var hidden = false
     let demo: Bool
     var demoTimer: Timer?
-    init(catalog: Catalog, config: URL, monitor: Monitor, demo: Bool) {
-        self.catalog = catalog; self.config = config; self.monitor = monitor; self.demo = demo
+    init(catalog: Catalog, config: URL, monitor: Monitor, claude: ClaudeWatcher, opencode: OpenCodeWatcher, demo: Bool) {
+        self.catalog = catalog; self.config = config; self.monitor = monitor
+        self.claudeWatcher = claude; self.opencodeWatcher = opencode; self.demo = demo
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -43,7 +50,18 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         save()
         monitor.onUpdate = { [weak self] threads, diagnostic in
             guard let self, !self.demo else { return }
-            self.threads = threads; self.connection = diagnostic; self.refresh()
+            self.codexThreads = threads
+            self.merge(diagnostic: diagnostic, for: "Codex"); self.refresh()
+        }
+        claudeWatcher.onUpdate = { [weak self] threads, diagnostic in
+            guard let self, !self.demo else { return }
+            self.claudeThreads = threads
+            self.merge(diagnostic: diagnostic, for: "Claude Code"); self.refresh()
+        }
+        opencodeWatcher.onUpdate = { [weak self] threads, diagnostic in
+            guard let self, !self.demo else { return }
+            self.opencodeThreads = threads
+            self.merge(diagnostic: diagnostic, for: "opencode"); self.refresh()
         }
         if demo {
             connection = "Demo · no Codex activity is being monitored"
@@ -53,7 +71,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self?.threads = [ThreadState(id: "demo", name: "Demo thread", status: states[step % states.count])]
                 step += 1; self?.refresh()
             }
-        } else { monitor.start() }
+        } else {
+            monitor.start(); claudeWatcher.start(); opencodeWatcher.start()
+        }
         if let directory = option("--smoke") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
                 guard let self else { return }
@@ -75,7 +95,14 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if catalog.pets.isEmpty { alert("No pets found", "Add pet folders containing pet.json and a spritesheet to \(catalog.directory.path), then choose Reload pets from the menu-bar icon. You can also use codex-harem --import-codex to copy your existing pets once.") }
     }
     func applicationWillTerminate(_ notification: Notification) {
-        monitor.stop(); demoTimer?.invalidate(); windows.values.forEach { ($0.contentView as? PetView)?.stop() }; save()
+        monitor.stop(); claudeWatcher.stop(); opencodeWatcher.stop(); demoTimer?.invalidate(); windows.values.forEach { ($0.contentView as? PetView)?.stop() }; save()
+    }
+    func mergeThreads() {
+        threads = (codexThreads + claudeThreads + opencodeThreads).sorted { $0.updatedAt > $1.updatedAt }
+    }
+    func merge(diagnostic: String, for provider: String) {
+        diagnostics[provider] = diagnostic
+        connection = ["Codex", "Claude Code", "opencode"].compactMap { diagnostics[$0] }.joined(separator: " · ")
     }
     func show(_ instance: PetInstance) {
         guard let pet = catalog.pets[instance.petID] else { return }
@@ -96,8 +123,10 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         view.start(); refresh()
     }
     func refresh() {
+        mergeThreads()
         for instance in instances {
-            (windows[instance.id]?.contentView as? PetView)?.status = Selection.status(for: instance.threadID, threads: threads)
+            let harness = instance.harness ?? .all
+            (windows[instance.id]?.contentView as? PetView)?.status = Selection.status(for: instance.threadID, harness: harness, threads: threads)
         }
     }
     func menuWillOpen(_ menu: NSMenu) {
@@ -142,12 +171,19 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func petMenu(_ id: UUID) -> NSMenu {
         let menu = NSMenu()
         guard let instance = instances.first(where: { $0.id == id }) else { return menu }
-        menu.addItem(NSMenuItem(title: "Status: \(Selection.status(for: instance.threadID, threads: threads).rawValue)", action: nil, keyEquivalent: ""))
+        let harness = instance.harness ?? .all
+        menu.addItem(NSMenuItem(title: "Status: \(Selection.status(for: instance.threadID, harness: harness, threads: threads).rawValue)", action: nil, keyEquivalent: ""))
+        let listen = NSMenuItem(title: "Listen to", action: nil, keyEquivalent: ""), listeners = NSMenu()
+        for candidate in Harness.allCases {
+            listeners.addItem(ActionItem(candidate.displayName, checked: harness == candidate) { [weak self] in self?.setHarness(id, to: candidate) })
+        }
+        listen.submenu = listeners; menu.addItem(listen)
         menu.addItem(ActionItem("Follow latest thread", checked: instance.threadID == nil) { [weak self] in self?.bind(id, to: nil) })
         menu.addItem(ActionItem("Follow all threads", checked: instance.threadID == "*") { [weak self] in self?.bind(id, to: "*") })
         let item = NSMenuItem(title: "Follow thread", action: nil, keyEquivalent: ""), sub = NSMenu()
-        for thread in threads.prefix(64) {
-            sub.addItem(ActionItem("\(thread.name.prefix(55)) · \(thread.status.rawValue)", checked: instance.threadID == thread.id) { [weak self] in self?.bind(id, to: thread.id) })
+        let pool = threads.filter { harness == .all || $0.harness == harness }
+        for thread in pool.prefix(64) {
+            sub.addItem(ActionItem("\(thread.harness.displayName) · \(thread.name.prefix(45)) · \(thread.status.rawValue)", checked: instance.threadID == thread.id) { [weak self] in self?.bind(id, to: thread.id) })
         }
         item.submenu = sub; menu.addItem(item)
         let size = NSMenuItem(title: "Size", action: nil, keyEquivalent: ""), sizes = NSMenu()
@@ -187,6 +223,16 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func bind(_ id: UUID, to thread: String?) {
         guard let index = instances.firstIndex(where: { $0.id == id }) else { return }
         instances[index].threadID = thread
+        (windows[id]?.contentView as? PetView)?.instance = instances[index]
+        save(); refresh()
+    }
+    func setHarness(_ id: UUID, to harness: Harness) {
+        guard let index = instances.firstIndex(where: { $0.id == id }) else { return }
+        instances[index].harness = harness == .all ? nil : harness
+        if let binding = instances[index].threadID, binding != "*",
+           let bound = threads.first(where: { $0.id == binding }), bound.harness != harness {
+            instances[index].threadID = nil
+        }
         (windows[id]?.contentView as? PetView)?.instance = instances[index]
         save(); refresh()
     }
