@@ -28,6 +28,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var connection = "Starting…"
     var statusItem: NSStatusItem!
     var hidden = false
+    var lastArrangement: Arrangement = .grid
     let demo: Bool
     var demoTimer: Timer?
     init(catalog: Catalog, config: URL, monitor: Monitor, claude: ClaudeWatcher, opencode: OpenCodeWatcher, demo: Bool) {
@@ -162,7 +163,14 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }; self.hidden.toggle()
             for panel in self.windows.values { if self.hidden { panel.orderOut(nil) } else { panel.orderFrontRegardless() } }
         })
-        menu.addItem(ActionItem("Arrange pets") { [weak self] in self?.arrange() })
+        let arrange = NSMenuItem(title: "Arrange pets", action: nil, keyEquivalent: "")
+        let styles = NSMenu()
+        for style in Arrangement.allCases {
+            styles.addItem(ActionItem(style.displayName, checked: style == lastArrangement) { [weak self] in
+                self?.arrange(style)
+            })
+        }
+        arrange.submenu = styles; menu.addItem(arrange)
         if !catalog.errors.isEmpty {
             menu.addItem(ActionItem("Pet loading warnings (\(catalog.errors.count))") { [weak self] in self?.alert("Pet loading warnings", self?.catalog.errors.joined(separator: "\n") ?? "") })
         }
@@ -241,19 +249,38 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let instance = PetInstance(petID: pet, threadID: "*", x: screen.midX + Double.random(in: -150...150), y: screen.minY + 30)
         instances.append(instance); show(instance); save()
     }
-    func arrange() {
-        let screen = NSScreen.main?.visibleFrame ?? .zero
-        var x = screen.maxX, y = screen.minY + 20.0, rowHeight = 0.0
-        for index in instances.indices {
-            (windows[instances[index].id]?.contentView as? PetView)?.cancelWalking()
-            let size = instances[index].size
-            if x - size < screen.minX { x = screen.maxX; y += rowHeight + 10; rowHeight = 0 }
-            x -= size + 8; rowHeight = max(rowHeight, size + 24)
-            instances[index].x = x; instances[index].y = y
-            windows[instances[index].id]?.setFrameOrigin(NSPoint(x: x, y: y))
-            (windows[instances[index].id]?.contentView as? PetView)?.instance = instances[index]
+    func arrange(_ style: Arrangement) {
+        guard let screen = arrangementScreen() else { return }
+        lastArrangement = style
+        let sizes = instances.map { CGSize(width: $0.size, height: $0.size + 24) }
+        let origins = style.positions(for: sizes, in: screen.visibleFrame)
+        for (index, origin) in origins.enumerated() where instances.indices.contains(index) {
+            let id = instances[index].id
+            (windows[id]?.contentView as? PetView)?.cancelWalking()
+            instances[index].x = origin.x; instances[index].y = origin.y
+            windows[id]?.setFrameOrigin(origin)
+            (windows[id]?.contentView as? PetView)?.instance = instances[index]
         }
         save()
+    }
+    /// Arrange on the display that currently holds the most pets. When the
+    /// group is off-screen or empty, fall back to the screen under the pointer.
+    private func arrangementScreen() -> NSScreen? {
+        let screens = NSScreen.screens
+        guard !screens.isEmpty else { return nil }
+        let frames = windows.values.map(\.frame)
+        var best = screens[0]
+        var bestArea: CGFloat = -1
+        for screen in screens {
+            let area = frames.reduce(CGFloat.zero) { total, frame in
+                let overlap = screen.visibleFrame.intersection(frame)
+                return total + (overlap.isNull ? 0 : overlap.width * overlap.height)
+            }
+            if area > bestArea { bestArea = area; best = screen }
+        }
+        if bestArea > 0 { return best }
+        let pointer = NSEvent.mouseLocation
+        return screens.first { $0.frame.contains(pointer) } ?? NSScreen.main ?? screens[0]
     }
     func save() {
         do {

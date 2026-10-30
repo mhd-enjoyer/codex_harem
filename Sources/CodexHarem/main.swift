@@ -31,7 +31,8 @@ if args.contains("--help") {
     --claude-home  Claude Code data directory (default: ~/.claude). Claude Code status
                  comes from tailing session transcripts; no hooks or setup are needed.
     --opencode   Absolute path to the opencode CLI (default: search PATH and Homebrew paths).
-                 The watcher spawns "opencode serve" on a local port.
+                 The watcher attaches to a running "opencode serve --service" when one is
+                 registered, otherwise it spawns "opencode serve" on a local port.
     """)
     exit(0)
 }
@@ -41,6 +42,15 @@ let support = fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/App
 let petDirectory = URL(fileURLWithPath: option("--pets") ?? support.appendingPathComponent("Pets").path)
 let claudePaths = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init) + ["/opt/homebrew/bin", "/usr/local/bin"]
 let opencodeExecutable = option("--opencode") ?? claudePaths.map { $0 + "/opencode" }.first(where: { fm.isExecutableFile(atPath: $0) }) ?? ""
+let opencodeDataRoot = ProcessInfo.processInfo.environment["XDG_DATA_HOME"] ?? fm.homeDirectoryForCurrentUser.appendingPathComponent(".local/share").path
+let opencodeDatabase = URL(fileURLWithPath: opencodeDataRoot).appendingPathComponent("opencode/opencode.db")
+// opencode 2.x registers its long-lived service here; the password is required for the
+// `/api/*` routes and only available from this file.
+let opencodeStateRoot = ProcessInfo.processInfo.environment["XDG_STATE_HOME"] ?? fm.homeDirectoryForCurrentUser.appendingPathComponent(".local/state").path
+let opencodeConfigRoot = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"] ?? fm.homeDirectoryForCurrentUser.appendingPathComponent(".config").path
+let opencodeServices = [opencodeStateRoot, opencodeConfigRoot, opencodeDataRoot].map {
+    URL(fileURLWithPath: $0).appendingPathComponent("opencode/service.json")
+}
 let claudeHome = URL(fileURLWithPath: option("--claude-home") ?? fm.homeDirectoryForCurrentUser.appendingPathComponent(".claude").path)
 if args.contains("--import-codex") {
     let report = importCodexPets(from: home, to: petDirectory)
@@ -98,7 +108,8 @@ if args.contains("--diagnose") {
     let claudeStates = claudeMonitor.poll().sorted { $0.updatedAt > $1.updatedAt }
     for state in claudeStates.prefix(10) { print("claude \(state.id): \(state.status.rawValue) · \(state.name)") }
     print("Claude Code: \(claudeStates.count) recent sessions from \(claudeHome.path)")
-    print("opencode: \(opencodeExecutable.isEmpty ? "CLI not found" : opencodeExecutable)")
+    let opencodeService = opencodeServices.first { fm.fileExists(atPath: $0.path) }
+    print("opencode: \(opencodeExecutable.isEmpty ? "CLI not found" : opencodeExecutable) · shared storage \(fm.fileExists(atPath: opencodeDatabase.path) ? "present" : "absent") · service \(opencodeService.map { "registered at \($0.path)" } ?? "not registered")")
     exit(catalog.pets.isEmpty || !catalog.errors.isEmpty ? 1 : 0)
 }
 let paths = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init) + ["/opt/homebrew/bin", "/usr/local/bin"]
@@ -107,7 +118,7 @@ let config = URL(fileURLWithPath: option("--config") ?? support.appendingPathCom
 if let seconds = option("--probe").flatMap(Double.init), seconds > 0, seconds <= 60 {
     let probe = Monitor(home: home, executable: executable)
     let claudeProbe = ClaudeWatcher(home: claudeHome)
-    let openProbe = OpenCodeWatcher(executable: opencodeExecutable)
+    let openProbe = OpenCodeWatcher(executable: opencodeExecutable, database: opencodeDatabase, services: opencodeServices)
     var merged: [ThreadState] = []
     var diagnostics: [String: String] = [:]
     func snapshot() {
@@ -129,6 +140,6 @@ if let seconds = option("--probe").flatMap(Double.init), seconds > 0, seconds <=
 }
 let app = NSApplication.shared
 let delegate = App(catalog: catalog, config: config, monitor: Monitor(home: home, executable: executable),
-                   claude: ClaudeWatcher(home: claudeHome), opencode: OpenCodeWatcher(executable: opencodeExecutable), demo: args.contains("--demo"))
+                   claude: ClaudeWatcher(home: claudeHome), opencode: OpenCodeWatcher(executable: opencodeExecutable, database: opencodeDatabase, services: opencodeServices), demo: args.contains("--demo"))
 app.delegate = delegate
 app.run()

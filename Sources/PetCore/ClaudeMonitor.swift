@@ -30,6 +30,9 @@ public enum ClaudeReducer {
 /// Incremental tail of Claude Code session transcripts under `<home>/projects`.
 /// Threads are namespaced as `claude:<session-uuid>` so bindings never collide with Codex threads.
 public final class ClaudeMonitor {
+    /// Unfinished turns older than this are decayed to idle: transcripts end without a
+    /// terminal marker when a session is killed, so old work evidence must not persist.
+    public static let staleInterval: TimeInterval = 900
     private let root: URL
     private var tails: [URL: JSONLTail] = [:]
     public private(set) var threads: [String: ThreadState] = [:]
@@ -68,6 +71,8 @@ public final class ClaudeMonitor {
                 }
             }
             tails[url] = tail
+            if state.status == .working || state.status == .thinking,
+               now.timeIntervalSince(state.updatedAt) > ClaudeMonitor.staleInterval { state.status = .idle }
             threads[id] = state
         }
         threads = threads.filter { ids.contains($0.key) }

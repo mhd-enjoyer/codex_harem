@@ -2,9 +2,21 @@
 
 Multiple animated pets on your macOS desktop, following your coding-agent harnesses: Codex, Claude Code, and opencode. A small native Swift package with no third-party dependencies or API key requirement.
 
-Each pet has its own transparent, floating window. Add as many instances as you want, including duplicates. Drag to move, click to wave, and right-click to select a thread, resize, or remove. The horned anime menu-bar icon adds pets, arranges them, and hides or shows the group. Layout and thread bindings survive restarts. Pets appear across Spaces and alongside fullscreen apps; they don't take keyboard focus.
+Each pet has its own transparent, floating window. Add as many instances as you want, including duplicates. Drag to move, click to wave, and right-click to select a thread, resize, or remove. The horned anime menu-bar icon adds pets, arranges them with several layout styles, and hides or shows the group. Layout and thread bindings survive restarts. Pets appear across Spaces and alongside fullscreen apps; they don't take keyboard focus.
 
 Right-click an individual pet and enable **Walk around** to let it take occasional short strolls while idle (or after its completion review finishes). Each pet's toggle is independent, off by default, and saved with its layout. Walks stay within the current screen and pause when you hover, drag, hide the pet, enable Reduce Motion, or a task changes its status. Position is saved at the end of each walk.
+
+Use the menu-bar icon → **Arrange pets** to choose a layout:
+
+| Style | Placement |
+| --- | --- |
+| Grid | The original packed layout, filled right-to-left and bottom-up |
+| Align left / right | A vertical column hugging that edge, flowing top-to-bottom |
+| Align top / bottom | A horizontal row hugging that edge, flowing left-to-right |
+| Center | A compact block in the middle of the screen |
+| Random scatter | Independent random positions across the whole visible area |
+
+Arranging uses each pet's current size, stops any stroll in progress, and keeps every window inside the visible frame. Edge styles wrap into another column or row when they run out of room, and random scatter avoids overlapping pets where space allows. The last style is checked in the menu for the current session, and the resulting positions are saved to the layout file.
 
 Right-click a pet and choose **Animation speed** to select Slow (40%), Relaxed (65%, the new default), Original (100%), or Fast (125%). This preference is saved per instance. The percentages scale the previous frame rates, not a verified built-in Codex timing specification. All frames still play; loops take longer. Walking movement and one-shot gesture durations use the same rate so slower jumps finish and walking stays in step. For example, the six-frame active-work loop now takes about 1.15 seconds at the default, rather than 0.75 seconds.
 
@@ -77,11 +89,13 @@ If the shared daemon is unavailable (including older Codex versions), the compan
 
 ### Claude Code
 
-Claude Code needs no setup and no hooks: the companion tails session transcripts under `~/.claude/projects` (latest 64, incremental, partial-write safe) once per second, exactly like the Codex log fallback. Tool calls map to working, model text and reasoning to thinking, a finished turn marker to completed, and thread names come from generated session titles or the project folder. **Transcripts cannot expose permission prompts, so the waiting animation never appears for Claude Code**, and a session interrupted without further writes may keep its last status. Use `--claude-home` to point at a different Claude data directory.
+Claude Code needs no setup and no hooks: the companion tails session transcripts under `~/.claude/projects` (latest 64, incremental, partial-write safe) once per second, exactly like the Codex log fallback. Tool calls map to working, model text and reasoning to thinking, a finished turn marker to completed, and thread names come from generated session titles or the project folder. **Transcripts cannot expose permission prompts, so the waiting animation never appears for Claude Code.** A killed or crashed session leaves no end-of-turn marker in its transcript, so unfinished turns keep their last status for 15 minutes and then decay to idle; new transcript writes revive the live status immediately. Use `--claude-home` to point at a different Claude data directory.
 
 ### opencode
 
-If an `opencode` CLI is found on `PATH` (or passed with `--opencode`), the companion spawns `opencode serve` on a free localhost port and observes it like the Codex shared server: one poll per second of `/session` (titles, timestamps) and `/session/status` (busy/retry/idle), plus the `/event` SSE stream for permission requests (waiting), permission replies, turn completion, and errors (aborted turns show interrupted, other errors failed). Sessions you run in the opencode TUI appear in the list because the server reads the same shared storage. Set `OPENCODE_SERVER_PASSWORD` if you want the spawned server protected with basic auth; the companion sends the credentials automatically.
+opencode 2.x keeps a long-lived `opencode serve --service` process and publishes its port and Basic-auth password in `~/.local/state/opencode/service.json` (also checked under `$XDG_STATE_HOME`, `$XDG_CONFIG_HOME`, and the data directory). The companion attaches to that service when it is reachable, so sessions you run in the TUI are covered directly: one poll per second of `/api/session` (titles, timestamps) and `/api/session/active` (running/idle), plus the `/api/event` SSE stream for execution start/finish, tool use, retries, permission requests (waiting), and errors (aborted turns show interrupted, other errors failed). If no service is registered, it spawns `opencode serve` on a free localhost port with a generated `OPENCODE_SERVER_PASSWORD` and talks to it the same way; set that variable yourself to choose the password. opencode 1.x servers are detected through their older `/session`, `/session/status`, and `/event` routes.
+
+When the companion had to spawn its own server, the active map covers only that server's sessions, so it also reads opencode's shared SQLite storage (`~/.local/share/opencode/opencode.db`, read-only) once per second: a turn counts as active while its newest message has no completion marker, with a 15-minute decay for abandoned turns. opencode 2.x can hold the WAL exclusively, which leaves those reads at the last checkpoint; attaching to the shared service avoids that. Permission requests are not persisted in storage, so the waiting animation depends on the SSE stream. The companion stops the server it spawned but never terminates a shared service.
 
 The default Codex home is `$CODEX_HOME`, falling back to `~/.codex`. Layout is stored separately at `~/Library/Application Support/CodexHarem/pets.json`.
 

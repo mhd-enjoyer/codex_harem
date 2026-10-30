@@ -38,7 +38,7 @@ final class HarnessTests: XCTestCase {
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
         let uuid = "12345678-1234-1234-1234-123456789012"
         let file = project.appendingPathComponent("\(uuid).jsonl")
-        let stamp = "2026-10-30T00:00:00.000Z"
+        let stamp = Self.stamp(Date().addingTimeInterval(-10))
         let first = #"{"type":"assistant","cwd":"/Users/demo/repo","sessionId":"\#(uuid)","timestamp":"\#(stamp)","message":{"content":[{"type":"text","text":"Thinking about it"}]}}"#
         try Data((first + "\n").utf8).write(to: file)
         let monitor = ClaudeMonitor(home: home)
@@ -50,7 +50,7 @@ final class HarnessTests: XCTestCase {
         XCTAssertEqual(states.first?.name, "repo · \(uuid.prefix(8))")
         let title = #"{"type":"ai-title","aiTitle":"Named session","sessionId":"\#(uuid)"}"#
         try Data((title + "\n").utf8).append(to: file)
-        let toolUse = #"{"type":"assistant","sessionId":"\#(uuid)","timestamp":"2026-10-30T00:00:05.000Z","message":{"content":[{"type":"tool_use","name":"Edit"}]}}"#
+        let toolUse = #"{"type":"assistant","sessionId":"\#(uuid)","timestamp":"\#(Self.stamp(Date().addingTimeInterval(-5)))","message":{"content":[{"type":"tool_use","name":"Edit"}]}}"#
         try Data((toolUse + "\n").utf8).append(to: file)
         states = monitor.poll()
         XCTAssertEqual(states.first?.status, .working)
@@ -58,9 +58,33 @@ final class HarnessTests: XCTestCase {
         XCTAssertNotNil(states.first?.updatedAt)
     }
 
+    func testClaudeMonitorDecaysStaleUnfinishedTurns() throws {
+        let home = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("harem-claude-\(UUID().uuidString)")
+        let project = home.appendingPathComponent("projects/-Users-demo-repo")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let uuid = "12345678-1234-1234-1234-123456789012"
+        let file = project.appendingPathComponent("\(uuid).jsonl")
+        let stale = #"{"type":"assistant","cwd":"/Users/demo/repo","timestamp":"\#(Self.stamp(Date().addingTimeInterval(-ClaudeMonitor.staleInterval - 60)))","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#
+        try Data((stale + "\n").utf8).write(to: file)
+        let monitor = ClaudeMonitor(home: home)
+        var states = monitor.poll()
+        XCTAssertEqual(states.first?.status, .idle)
+        let fresh = #"{"type":"assistant","sessionId":"\#(uuid)","timestamp":"\#(Self.stamp(Date().addingTimeInterval(-5)))","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#
+        try Data((fresh + "\n").utf8).append(to: file)
+        states = monitor.poll()
+        XCTAssertEqual(states.first?.status, .working)
+    }
+
+    static func stamp(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
+
     func testOpenCodeSessionStatusMapping() {
         XCTAssertEqual(OpenCodeReducer.sessionStatus(["type": "busy"]), .thinking)
         XCTAssertEqual(OpenCodeReducer.sessionStatus(["type": "retry"]), .thinking)
+        XCTAssertEqual(OpenCodeReducer.sessionStatus(["type": "running"]), .thinking)
         XCTAssertEqual(OpenCodeReducer.sessionStatus(["type": "idle"]), .idle)
         XCTAssertNil(OpenCodeReducer.sessionStatus(["type": "unknown"]))
     }
@@ -78,6 +102,28 @@ final class HarnessTests: XCTestCase {
         let failed: [String: Any] = ["type": "session.error", "properties": ["sessionID": "ses_a", "error": ["name": "ProviderAuthError"]]]
         XCTAssertEqual(OpenCodeReducer.event(failed)?.1, .failed)
         let unrelated: [String: Any] = ["type": "lsp.updated", "properties": [:]]
+        XCTAssertNil(OpenCodeReducer.event(unrelated))
+    }
+
+    /// opencode 2.x wraps event fields in `data` and reports turn boundaries with
+    /// `session.execution.*` instead of `session.idle`.
+    func testOpenCodeV2EventMapping() {
+        let asked: [String: Any] = ["type": "permission.asked", "data": ["sessionID": "ses_v2"]]
+        XCTAssertEqual(OpenCodeReducer.event(asked)?.0, "ses_v2")
+        XCTAssertEqual(OpenCodeReducer.event(asked)?.1, .waiting)
+        for type in ["session.execution.started", "session.step.started", "session.retry.scheduled"] {
+            let event: [String: Any] = ["type": type, "data": ["sessionID": "ses_v2"]]
+            XCTAssertEqual(OpenCodeReducer.event(event)?.1, .thinking, type)
+        }
+        let tool: [String: Any] = ["type": "session.tool.called", "data": ["sessionID": "ses_v2"]]
+        XCTAssertEqual(OpenCodeReducer.event(tool)?.1, .working)
+        let succeeded: [String: Any] = ["type": "session.execution.succeeded", "data": ["sessionID": "ses_v2"]]
+        XCTAssertEqual(OpenCodeReducer.event(succeeded)?.1, .idle)
+        let failed: [String: Any] = ["type": "session.execution.failed", "data": ["sessionID": "ses_v2"]]
+        XCTAssertEqual(OpenCodeReducer.event(failed)?.1, .failed)
+        let interrupted: [String: Any] = ["type": "session.execution.interrupted", "data": ["sessionID": "ses_v2"]]
+        XCTAssertEqual(OpenCodeReducer.event(interrupted)?.1, .interrupted)
+        let unrelated: [String: Any] = ["type": "session.renamed", "data": ["sessionID": "ses_v2", "title": "x"]]
         XCTAssertNil(OpenCodeReducer.event(unrelated))
     }
 
