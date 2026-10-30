@@ -1,117 +1,90 @@
 # Codex Harem
 
-Multiple animated pets on your macOS desktop, following your coding-agent harnesses: Codex, Claude Code, and opencode. A small native Swift package with no third-party dependencies or API key requirement.
+Animated pets that live on your macOS desktop and react to your coding agents: Codex, Claude Code, and opencode. Native Swift, no third-party dependencies, no API key, and no model requests — it only reads status.
 
-Each pet has its own transparent, floating window. Add as many instances as you want, including duplicates. Drag to move, click to wave, and right-click to select a thread, resize, or remove. The horned anime menu-bar icon adds pets, arranges them with several layout styles, and hides or shows the group. Layout and thread bindings survive restarts. Pets appear across Spaces and alongside fullscreen apps; they don't take keyboard focus.
+![Codex Harem](assets/app-icon.png)
 
-Right-click an individual pet and enable **Walk around** to let it take occasional short strolls while idle (or after its completion review finishes). Each pet's toggle is independent, off by default, and saved with its layout. Walks stay within the current screen and pause when you hover, drag, hide the pet, enable Reduce Motion, or a task changes its status. Position is saved at the end of each walk.
+## What it does
 
-Use the menu-bar icon → **Arrange pets** to choose a layout:
+- **One pet, one window.** Each pet is its own transparent, non-activating floating panel that follows you across Spaces and over fullscreen apps without ever taking keyboard focus. Add as many as you like, including duplicates of the same pet.
+- **Status animation.** Each pet picks a harness to listen to (all, Codex, Claude Code, opencode) and optionally a specific thread. Idle pets drift through calm loops; a working agent triggers the active animation; waiting and failed states raise a badge, and hover names the current status. Unavailable threads dim to half opacity instead of disappearing.
+- **Direct manipulation.** Drag to move, click to wave, right-click for the per-pet menu: harness, thread binding, size (100–260 pt), animation speed, walk toggle, remove.
+- **Menu-bar icon** (the horned anime one) to add pets, open the pet folder, reload artwork, hide or show all pets, and arrange them.
+- **Arrangement.** Grid, align left/right/top/bottom, center, or random scatter. Arranging respects each pet's current size, stays inside the visible frame, and wraps into extra rows/columns when space runs out; scatter avoids overlap where it can.
+- **Optional idle walking.** Per pet, off by default. Short strolls within the current screen that pause on hover, drag, hide, status change, or Reduce Motion.
+- **Persistence.** Positions, sizes, thread bindings, harness choice, walking, and playback speed are saved to `pets.json` and survive restarts.
+- **Independent artwork library.** Pets load only from `~/Library/Application Support/CodexHarem/Pets/*/pet.json`; Codex's own artwork cache is touched solely by the explicit one-shot importer.
 
-| Style | Placement |
-| --- | --- |
-| Grid | The original packed layout, filled right-to-left and bottom-up |
-| Align left / right | A vertical column hugging that edge, flowing top-to-bottom |
-| Align top / bottom | A horizontal row hugging that edge, flowing left-to-right |
-| Center | A compact block in the middle of the screen |
-| Random scatter | Independent random positions across the whole visible area |
+## What it cannot do
 
-Arranging uses each pet's current size, stops any stroll in progress, and keeps every window inside the visible frame. Edge styles wrap into another column or row when they run out of room, and random scatter avoids overlapping pets where space allows. The last style is checked in the menu for the current session, and the resulting positions are saved to the layout file.
+This is a read-only observer. It never sends prompts, approves tools, resumes threads, or changes settings, so it cannot unblock a waiting agent — it just tells you one is waiting.
 
-Right-click a pet and choose **Animation speed** to select Slow (40%), Relaxed (65%, the new default), Original (100%), or Fast (125%). This preference is saved per instance. The percentages scale the previous frame rates, not a verified built-in Codex timing specification. All frames still play; loops take longer. Walking movement and one-shot gesture durations use the same rate so slower jumps finish and walking stays in step. For example, the six-frame active-work loop now takes about 1.15 seconds at the default, rather than 0.75 seconds.
+Per-harness blind spots, in the order they bite:
+
+| Harness | How it reads | Not visible |
+| --- | --- | --- |
+| **Codex** | Shared app-server socket via `codex app-server proxy`; falls back to tailing `$CODEX_HOME/sessions` JSONL | Fallback mode cannot see pending approvals or a killed CLI process. Only the shared server gives exact waiting/idle states. |
+| **Claude Code** | Tails `~/.claude/projects/**/*.jsonl` — no hooks, no setup | Permission prompts are never written to transcripts, so **waiting never appears**. A crashed session keeps its last status for 15 minutes before decaying to idle. |
+| **opencode** | Attaches to the registered `opencode serve --service`; otherwise spawns its own server | Attached, TUI sessions are covered. Spawned, only that server's sessions are, and busy state has to be guessed from `opencode.db`, which a 2.x service may hold behind its WAL. Permission requests are never persisted, so waiting depends on the live SSE stream. |
+
+Other honest limits:
+
+- **macOS 13+ only**, and the packaged app is ad-hoc signed. Distributing to other Macs needs Developer ID signing and notarization.
+- **Timing is approximate.** Default playback is 65% of the authored frame rate. The 40/65/100/125% menu options are deliberate choices, not verified parity with any original spec.
+- **Polling, not push.** Runtime status is re-read once per second. A final logged "active" state can persist until the next event arrives.
+- **Bounded history.** The newest 64 session files are read per log-tailed harness, and the *Follow thread* menu lists at most 64 threads.
+- **Artwork is yours to audit.** Local `pets/` images are gitignored; a zip built in this workspace embeds copies of whatever they contain, so distributing that zip distributes those images too.
+- **Single Mac, no sync.** Nothing leaves the machine, and saved layouts are only as portable as the library paths you point them at.
 
 ## Run
 
-Requires macOS 13+, Swift 6+ to build, and an installed Codex CLI. The shared-server integration is tested against the protocol schema from Codex CLI 0.163.0.
+Requires macOS 13+ and Swift 6+ to build. Harnesses are optional — install the ones you want watched; a missing one simply never reports.
 
 ```sh
 swift run codex-harem
 ```
 
-Or build a double-clickable app and zip:
+Build a double-clickable app and zip:
 
 ```sh
 ./scripts/package.sh
 open 'dist/Codex Harem.app'
 ```
 
-Copy the app to Applications if desired. The local bundle uses an ad-hoc signature; distribution to other Macs would require Developer ID signing and notarization.
-
-Start with a safe demonstration of every status:
+Try every status without an agent running:
 
 ```sh
 swift run codex-harem --demo
 ```
 
-The packaged app initializes its own artwork library from bundled local copies on first launch. Its first layout displays Codex, Dewey, and Fireball when installed. Artwork is loaded exclusively from `~/Library/Application Support/CodexHarem/Pets/*/pet.json`; normal launches never read Codex's artwork cache or custom-pet folder. The initial copy runs once, preserves existing IDs, and does not restore pets you later delete. Layout, walking preferences, and playback speeds remain in the separate `pets.json` file.
+On first launch the packaged app seeds its own artwork library from bundled copies and shows its first layout. That copy runs once, keeps existing IDs, and never resurrects pets you deleted.
 
-Use **Open pet folder** in the menu-bar icon to edit this library, and **Reload pets** after adding or editing artwork. `--pets PATH` replaces the library location entirely; it does not add Codex artwork or bundled seeds to that directory.
+### Flags
 
-For a source build without bundled artwork, import your existing cached Codex pets once:
-
-```sh
-swift run codex-harem --import-codex
-# Or import a standalone pet folder:
-swift run codex-harem --import-pet /path/to/my-pet
-```
-
-Imports validate and copy only the manifest and spritesheet into the independent library. Existing IDs are kept, and Codex's original files are never modified. Once copied, the pets continue to load even if the original source is unavailable. Importing from Codex is explicit; it is not part of ordinary loading.
-
-The local packaging script optionally bundles the standalone `pets/` directory as first-launch seeds. To populate that directory before building:
-
-```sh
-swift run codex-harem --pets ./pets --import-codex
-./scripts/package.sh
-```
-
-Local artwork is excluded from source control. The app zip built in this workspace includes the nine local copies imported for this user; distributing that zip also distributes those images.
-
-## Status syncing
-
-Each pet picks which harness it listens to: all harnesses, Codex, Claude Code, or opencode (right-click → **Listen to**). The "Follow thread" list only offers threads from the chosen harness, and switching harnesses drops a binding that belongs to another one. Thread IDs are namespaced per provider, so bindings never collide and saved layouts keep working across updates.
-
-The Codex companion connects with `codex app-server proxy` to the existing shared app-server socket. It initializes its own client, polls `thread/list`, and separately reads **all loaded threads**, including active threads older than the recent-history page. Reads use `includeTurns: false`; it never starts/resumes a conversation, changes Codex settings, sends a prompt, approves a tool, or requires a separate sign-in. Runtime status polling is once per second. Server-reported unloaded/idle states cannot be revived by stale active log records; only current log events enrich active work or preserve a recent terminal outcome. It also reduces lifecycle notifications when received. This protocol is documented in [Codex App Server](https://learn.chatgpt.com/docs/app-server).
-
-| Codex state | Pet behavior |
+| Flag | Meaning |
 | --- | --- |
-| Idle | Calm idle loop, occasional wave or hop |
-| Active/thinking | Active-work animation |
-| Executing tools | Active-work animation |
-| Waiting for approval/input | Expectant animation and “Waiting” badge |
-| Failed / system error | Failure animation and “Failed” badge |
-| Interrupted | Failure reaction with interrupted status |
-| Completed | Review animation, then resting pose |
-| Not loaded/unavailable | Dimmed resting pose if no rollout evidence is available |
+| `--home PATH` | Codex data directory (default `$CODEX_HOME` or `~/.codex`) |
+| `--claude-home PATH` | Claude Code data directory (default `~/.claude`) |
+| `--pets PATH` | Pet library (default `~/Library/Application Support/CodexHarem/Pets`); replaces the default, does not merge |
+| `--config PATH` | Layout file (default `~/Library/Application Support/CodexHarem/pets.json`) |
+| `--codex PATH`, `--opencode PATH` | Explicit CLI paths instead of PATH/Homebrew lookup |
+| `--import-codex` | Copy cached Codex artwork into the library once, then exit |
+| `--import-pet PATH` | Copy one pet folder into the library, then exit (existing IDs kept) |
+| `--diagnose` | Validate installed pets and print current session status, then exit |
+| `--probe N` | Print one merged snapshot per second for N seconds (1–60) |
+| `--render-contact PATH` | Write a PNG of installed pets across animation rows |
+| `--demo` | Cycle statuses without connecting to anything |
+| `--smoke DIR` | Render visible pet windows to PNG and exit (needs WindowServer) |
 
-A pet can follow a particular thread, the latest updated thread, or all threads. For “all,” waiting takes priority over working/thinking; when nothing is active, the most recently updated thread supplies the result. Old failures do not override current work. Individual bindings keep parallel conversations independent.
+Imports validate and copy only the manifest and spritesheet; source files are never modified, and imported pets keep loading after the source disappears.
 
-If the shared daemon is unavailable (including older Codex versions), the companion automatically reads recent session JSONL files under `$CODEX_HOME/sessions` and retries the proxy every ten seconds. It reads the latest 64 session files incrementally, retains partial writes, and handles truncation and atomic file replacement. The horned anime menu-bar icon identifies this degraded mode. **Session logs cannot reliably expose pending approvals or an abruptly killed Codex process**, and a final logged active state can remain active until another event arrives. Exact waiting/idle runtime status requires the shared-server connection. No inference requests are made by the companion.
+## Pet artwork
 
-### Claude Code
+A pet folder needs `pet.json` with `id`, `displayName`, `spritesheetPath`, and `spriteVersionNumber`. Standard v1 sheets are 8 columns × 9 rows; v2 adds two rows of sixteen clockwise look directions starting at up, and v2 pets glance toward the cursor while resting.
 
-Claude Code needs no setup and no hooks: the companion tails session transcripts under `~/.claude/projects` (latest 64, incremental, partial-write safe) once per second, exactly like the Codex log fallback. Tool calls map to working, model text and reasoning to thinking, a finished turn marker to completed, and thread names come from generated session titles or the project folder. **Transcripts cannot expose permission prompts, so the waiting animation never appears for Claude Code.** A killed or crashed session leaves no end-of-turn marker in its transcript, so unfinished turns keep their last status for 15 minutes and then decay to idle; new transcript writes revive the live status immediately. Use `--claude-home` to point at a different Claude data directory.
+Optional `frame: {width,height,columns,rows}` and `animations` overrides support custom sheets. Each animation is `{ "frames": [0, 1, 2], "fps": 8 }` with zero-based row-major indices. Override names: `idle`, `walkRight`, `walkLeft`, `wave`, `hop`, `failed`, `thinking`, `working`, `completed`.
 
-### opencode
-
-opencode 2.x keeps a long-lived `opencode serve --service` process and publishes its port and Basic-auth password in `~/.local/state/opencode/service.json` (also checked under `$XDG_STATE_HOME`, `$XDG_CONFIG_HOME`, and the data directory). The companion attaches to that service when it is reachable, so sessions you run in the TUI are covered directly: one poll per second of `/api/session` (titles, timestamps) and `/api/session/active` (running/idle), plus the `/api/event` SSE stream for execution start/finish, tool use, retries, permission requests (waiting), and errors (aborted turns show interrupted, other errors failed). If no service is registered, it spawns `opencode serve` on a free localhost port with a generated `OPENCODE_SERVER_PASSWORD` and talks to it the same way; set that variable yourself to choose the password. opencode 1.x servers are detected through their older `/session`, `/session/status`, and `/event` routes.
-
-When the companion had to spawn its own server, the active map covers only that server's sessions, so it also reads opencode's shared SQLite storage (`~/.local/share/opencode/opencode.db`, read-only) once per second: a turn counts as active while its newest message has no completion marker, with a 15-minute decay for abandoned turns. opencode 2.x can hold the WAL exclusively, which leaves those reads at the last checkpoint; attaching to the shared service avoids that. Permission requests are not persisted in storage, so the waiting animation depends on the SSE stream. The companion stops the server it spawned but never terminates a shared service.
-
-The default Codex home is `$CODEX_HOME`, falling back to `~/.codex`. Layout is stored separately at `~/Library/Application Support/CodexHarem/pets.json`.
-
-```sh
-codex-harem --home /path/to/codex-home --codex /absolute/path/to/codex
-codex-harem --claude-home /path/to/claude-home --opencode /absolute/path/to/opencode
-codex-harem --pets /path/to/independent-pets --config /path/to/layout.json
-codex-harem --diagnose
-codex-harem --probe 10
-```
-
-## Sprite compatibility
-
-Loads installed built-in and custom `pet.json` manifests from the independent library with `id`, `displayName`, `spritesheetPath`, and `spriteVersionNumber`. Standard v1 sheets have eight columns and nine rows; v2 adds two rows for sixteen clockwise look directions starting at up. v2 pets look toward the nearby cursor while resting. Directional walking plays during dragging and optional idle strolls. System Reduce Motion preferences suppress motion.
-
-Optional `frame: {width,height,columns,rows}` and `animations` overrides support custom sheets. Each animation is `{ "frames": [0, 1, 2], "fps": 8 }`, using zero-based row-major indices. Override names: `idle`, `walkRight`, `walkLeft`, `wave`, `hop`, `failed`, `thinking` (expectant pose), `working` (active work), `completed` (review). Per-pet playback speed scales these authored frame rates. Grid coverage, frame bounds, frame rates, versions, and sprite path containment are checked before use. This validates renderer compatibility, not artwork quality.
+Grid coverage, frame bounds, frame rates, versions, and sprite-path containment are validated before use — that is renderer compatibility, not a judgment on the artwork.
 
 ## Verification
 
@@ -120,12 +93,11 @@ swift test
 python3 scripts/test-proxy.py  # after swift build
 .build/debug/codex-harem --diagnose
 .build/debug/codex-harem --render-contact /tmp/pets.png
-.build/debug/codex-harem --demo --config /tmp/pet-layout.json --smoke /tmp/pet-windows
 ```
 
-`--smoke` runs the desktop app, renders its visible pet windows to PNG, and exits. It requires a normal macOS graphical login with WindowServer access. `--render-contact` renders installed sprite frames without launching the desktop UI. The proxy fixture validates the real transport's handshake, status transitions, and loaded-thread reads without issuing Codex model requests. `--probe N` prints one merged snapshot per second from all three harnesses, including the spawned opencode server.
+`scripts/test-proxy.py` drives the real monitor against a fixture executable, covering handshake, transitions, and the dead-proxy fallback without touching your live Codex socket. `VALIDATION.md` records what has actually been verified versus what needs a graphical session.
 
-In a restricted build sandbox, point Swift's caches at a writable temporary directory:
+In a restricted build sandbox:
 
 ```sh
 CLANG_MODULE_CACHE_PATH=/tmp/harem-clang-cache \
@@ -133,4 +105,9 @@ SWIFTPM_MODULECACHE_OVERRIDE=/tmp/harem-swift-cache \
 swift test --disable-sandbox
 ```
 
-The package script uses temporary caches and disables release debug-info generation, which avoids a sandbox-restricted dSYM step. AppKit/WindowServer and the user's live Codex socket may still be inaccessible from such a sandbox. Run the packaged app from Finder to verify desktop interaction and the live shared-server connection.
+`--smoke`, dragging, and live shared-server status all require a normal desktop login; they cannot be validated from a sandbox.
+
+## Credits
+
+- **App icon:** design reference by [zipzippipe](https://github.com/zipzippipe). The full-color master in `assets/app-icon.png` was produced from the maintainer's own character reference; `scripts/build-icon.sh` renders the ICNS set, and the monochrome menu-bar mark is drawn in code (`Sources/CodexHarem/MenuBarIcon.swift`).
+- Pet artwork is not included in source control; the sprites shown in local builds come from the user's own library.
